@@ -1,0 +1,4 @@
+-- env 파일 받을때
+git clone https://github.com/ice-wemericano/basic-goserver.git
+cd basic-goserver
+copy .env.example .env
