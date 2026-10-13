@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>대시보드 - rank-project</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0f172a; color: #e2e8f0; font-family: system-ui, sans-serif; padding: 32px 16px; }
+        .wrap { max-width: 1000px; margin: 0 auto; }
+        .nav { margin-bottom: 16px; }
+        .nav a { color: #60a5fa; text-decoration: none; font-size: 14px; }
+        h1 { font-size: 22px; margin-bottom: 16px; }
+        .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 20px;
+               background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 14px 16px; }
+        .bar label { font-size: 14px; color: #94a3b8; }
+        select, button { background: #0f172a; color: #e2e8f0; border: 1px solid #475569; border-radius: 8px;
+                         padding: 8px 12px; font-size: 14px; cursor: pointer; }
+        button:hover { border-color: #3b82f6; }
+        .reset { border-color: #7f1d1d; color: #fca5a5; }
+        table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 10px; overflow: hidden; }
+        th, td { padding: 12px 14px; text-align: left; border-bottom: 1px solid #334155; font-size: 14px; }
+        th { background: #172033; color: #94a3b8; font-weight: 600; }
+        .num { text-align: right; font-variant-numeric: tabular-nums; }
+        .reflected { color: #4ade80; font-weight: 600; }
+        .rejected { color: #fbbf24; font-weight: 600; }
+        .total { color: #38bdf8; font-weight: 600; }
+        .reasons { color: #94a3b8; font-size: 12px; }
+        .tag { display: inline-block; background: #0f172a; border: 1px solid #334155; border-radius: 6px;
+               padding: 2px 7px; margin: 2px 3px 0 0; }
+        .hint { color: #64748b; font-size: 12px; margin-top: 12px; line-height: 1.6; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="nav"><a href="/">← 게시판으로</a></div>
+        <h1>조회수 방어 대시보드</h1>
+
+        <div class="bar">
+            <label>기본 레벨 (개인별 설정 없는 글에 적용)</label>
+            <select id="level">
+                <option value="0">Lv0 — 방어 없음</option>
+                <option value="1">Lv1 — 쿠키 중복제거</option>
+                <option value="2">Lv2 — + IP 중복제거</option>
+                <option value="3">Lv3 — + 요청속도 제한</option>
+                <option value="4">Lv4 — + 봇 판별</option>
+                <option value="5">Lv5 — + 열람증명</option>
+            </select>
+            <button id="apply">기본 레벨 적용</button>
+            <button id="reset" class="reset">조회수·기록 초기화</button>
+            <label style="margin-left:auto;"><input type="checkbox" id="auto" checked> 2초 자동 새로고침</label>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>게시판</th><th>작성자</th>
+                    <th>방어 레벨 (개인별)</th>
+                    <th class="num">실제 조회수</th>
+                    <th class="num">전체 요청</th>
+                    <th class="num">반영</th>
+                    <th class="num">미반영</th>
+                    <th>미반영 사유</th>
+                </tr>
+            </thead>
+            <tbody id="body"><tr><td colspan="8">불러오는 중…</td></tr></tbody>
+        </table>
+
+        <div class="hint">
+            전체 요청 = 들어온 조회 시도 수 · 반영 = 조회수로 인정된 수 · 미반영 = 방어에 걸러진 수<br>
+            사유 코드: duplicate(중복) · rate_limited(속도초과) · bot(봇) · no_proof(열람증명 없음) · dwell_too_short(체류부족)
+        </div>
+    </div>
+    <script src="/js/dashboard.js"></script>
+</body>
+</html>

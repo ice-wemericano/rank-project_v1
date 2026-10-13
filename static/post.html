@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>글 보기 - rank-project</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0f172a; color: #e2e8f0; font-family: system-ui, sans-serif; padding: 40px 16px; }
+        .wrap { max-width: 720px; margin: 0 auto; }
+        .nav { margin-bottom: 20px; }
+        .nav a { color: #60a5fa; text-decoration: none; font-size: 14px; }
+        h1 { font-size: 22px; margin-bottom: 8px; }
+        .meta { color: #94a3b8; font-size: 13px; margin-bottom: 20px; }
+        .views { color: #38bdf8; font-weight: 600; font-size: 15px; }
+        .lv { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
+              background: #334155; color: #e2e8f0; }
+        .lv0 { background: #7f1d1d; color: #fecaca; }
+        .lv1, .lv2 { background: #78350f; color: #fde68a; }
+        .lv3, .lv4 { background: #1e3a8a; color: #bfdbfe; }
+        .lv5 { background: #14532d; color: #bbf7d0; }
+        .content { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 20px; line-height: 1.6; }
+        .status { margin-top: 18px; font-size: 13px; padding: 10px 14px; border-radius: 8px; background: #1e293b; border: 1px solid #334155; }
+        .ok { color: #4ade80; }
+        .no { color: #fbbf24; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="nav"><a href="/">← 목록으로</a></div>
+        <h1 id="title">불러오는 중…</h1>
+        <div class="meta" id="meta"></div>
+        <div class="content" id="content"></div>
+        <div class="status" id="status">열람증명 진행 중…</div>
+    </div>
+    <script src="/js/post.js"></script>
+</body>
+</html>
