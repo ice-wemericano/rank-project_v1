@@ -8,9 +8,10 @@ import (
 
 func Init() {
 	// 게시판
-	http.HandleFunc("/api/posts", service.Posts)     // 목록
-	http.HandleFunc("/api/posts/open", service.Open) // 글 열기 + 열람증명 토큰 발급
-	http.HandleFunc("/api/posts/view", service.View) // 조회수 증가 시도 (방어 로직)
+	http.HandleFunc("/api/posts", service.Posts)               // 목록
+	http.HandleFunc("/api/posts/open", service.Open)           // 글 열기 + 열람증명 토큰 발급
+	http.HandleFunc("/api/posts/heartbeat", service.Heartbeat) // 열람 heartbeat (Lv5)
+	http.HandleFunc("/api/posts/view", service.View)           // 조회수 증가 시도 (방어 로직)
 
 	// 대시보드 / 관리
 	http.HandleFunc("/api/dashboard", service.Dashboard) // 집계

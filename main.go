@@ -4,17 +4,39 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 
 	"rank-project_v1/db"
+	"rank-project_v1/defense"
 	"rank-project_v1/router"
 
 	"github.com/joho/godotenv"
 )
 
 func main() {
-	// 환경설정
+	// 환경설정 (.env 가 없으면 이미 주입된 환경변수 사용 - Docker --env-file 등)
 	if err := godotenv.Load(); err != nil {
-		panic("Failed to load .env")
+		fmt.Println(".env 없음 - 프로세스 환경변수 사용")
+	}
+
+	// HMAC 서명 키 (쿠키/열람증명 토큰 서명용). 다중 서버면 같은 SECRET_KEY 를 공유해야 한다.
+	if defense.InitSecret(os.Getenv("SECRET_KEY")) {
+		fmt.Println("서명 키: SECRET_KEY 사용")
+	} else {
+		fmt.Println("[WARN] SECRET_KEY 없음 - 임시 키 생성(단일 서버 전용, 재시작 시 기존 쿠키/토큰 무효)")
+	}
+
+	// 방어 상태 저장소: REDIS_ADDR 가 있으면 Redis(재시작·다중서버 유지), 없으면 메모리.
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+		rdb, _ := strconv.Atoi(os.Getenv("REDIS_DB"))
+		if rs, err := defense.NewRedisStore(addr, os.Getenv("REDIS_PASSWORD"), rdb); err != nil {
+			fmt.Println("[WARN] Redis 연결 실패 - 메모리 저장소로 폴백:", err)
+		} else {
+			defense.InitStore(rs)
+			fmt.Println("방어 상태 저장소: Redis", addr)
+		}
+	} else {
+		fmt.Println("방어 상태 저장소: 메모리 (REDIS_ADDR 설정 시 Redis 사용)")
 	}
 
 	// DB 연결 (NAS 다운 등으로 실패해도 서버는 뜬다 - degraded mode).

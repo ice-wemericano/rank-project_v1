@@ -31,13 +31,21 @@ async function run() {
         + ` · 방어 <span class="lv lv${post.level}">${levelName(post.level)}</span>`;
     contentEl.textContent = post.content;
 
+    const pt = encodeURIComponent(open.proof_token);
     const dwell = open.min_dwell_ms || 0;
-    if (dwell > 0) statusEl.textContent = `열람증명: ${(dwell / 1000)}초 머문 뒤 조회수 반영을 시도합니다…`;
+    if (dwell > 0) statusEl.textContent = `열람증명: ${(dwell / 1000)}초 머무는 동안 서버에 체류 신호(heartbeat)를 보냅니다…`;
 
-    // 2) 최소 체류 시간만큼 기다린 뒤 조회수 증가 시도
+    // 2) 머무는 동안 1초마다 heartbeat 전송 → 서버가 실제 체류시간을 누적한다.
+    const beat = () => fetch(`/api/posts/heartbeat?id=${id}&pt=${pt}`).catch(() => {});
+    beat();
+    const hb = setInterval(beat, 1000);
+
+    // 3) 최소 체류시간 + 여유(1.2초) 뒤 조회수 증가 시도
     setTimeout(async () => {
+        clearInterval(hb);
+        await beat(); // 마지막 heartbeat 로 잔여 체류 반영
         try {
-            const res = await fetch(`/api/posts/view?id=${id}&pt=${encodeURIComponent(open.proof_token)}`);
+            const res = await fetch(`/api/posts/view?id=${id}&pt=${pt}`);
             const r = await res.json();
             if (r.counted) {
                 statusEl.innerHTML = `<span class="ok">✔ 조회수에 반영되었습니다.</span> (방어 Lv${r.level})`;
@@ -49,7 +57,7 @@ async function run() {
         } catch (e) {
             statusEl.textContent = "조회수 반영 요청 실패";
         }
-    }, dwell);
+    }, dwell + 1200);
 }
 
 run();

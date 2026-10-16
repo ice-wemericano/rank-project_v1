@@ -36,8 +36,8 @@ func Open(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 쿠키 토큰 보장 (Lv1 식별용)
-	browserToken(w, r)
+	// 정상 사용자에게 식별용 쿠키 발급 (Lv1 식별용)
+	ensureCookie(w, r)
 
 	post, err := db.GetPost(id)
 	if err == db.ErrNoDB {
@@ -58,6 +58,19 @@ func Open(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Heartbeat 는 글을 보고 있는 동안 주기적으로 호출된다(Lv5).
+// 서버가 실제 체류시간을 누적한다. 클라이언트가 보낸 체류시간을 믿지 않는다.
+//   GET /api/posts/heartbeat?id=1&pt=<proof_token>
+func Heartbeat(w http.ResponseWriter, r *http.Request) {
+	id := atoiDefault(r.URL.Query().Get("id"), 0)
+	if id == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id 필요"})
+		return
+	}
+	ok := defense.Heartbeat(id, r.URL.Query().Get("pt"), clientIP(r))
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": ok})
+}
+
 func View(w http.ResponseWriter, r *http.Request) {
 	id := atoiDefault(r.URL.Query().Get("id"), 0)
 	if id == 0 {
@@ -65,7 +78,10 @@ func View(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := browserToken(w, r)
+	// 식별자는 "클라이언트가 보낸" 쿠키만 사용한다. 쿠키가 없으면 새로 발급하되,
+	// 이번 요청의 식별자로는 쓰지 않는다(쿠키를 매번 지우면 Lv1 을 우회하게 됨).
+	token := sentToken(r)
+	ensureCookie(w, r)
 	ip := clientIP(r)
 	now := time.Now()
 

@@ -1,0 +1,66 @@
+name: Deploy to NAS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-nas
+  cancel-in-progress: true
+
+env:
+  IMAGE: rank-project:latest
+  CONTAINER: rank-project
+
+jobs:
+  # GitHub 서버에서 컴파일 확인 (깨진 코드는 NAS까지 안 감)
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go build ./...
+
+  # NAS에 설치된 self-hosted 러너에서 빌드 + 재시작 (SSH/포트 개방 불필요)
+  deploy:
+    needs: check
+    runs-on: [self-hosted, nas]
+    env:
+      # .env 위치. 러너 컨테이너에 같은 경로로 마운트돼 있어야 함 (deploy/runner/docker-compose.yml)
+      DEPLOY_DIR: ${{ vars.NAS_DEPLOY_DIR || '/volume1/docker/rank-project' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t "$IMAGE" .
+
+      # 방어 상태(중복제거/rate limit/열람증명) 전용 Redis. 앱 재배포해도 상태 유지.
+      # /api/admin/reset 이 FLUSH 하므로 다른 서비스와 절대 공유하지 않는 전용 인스턴스.
+      - name: Ensure Redis
+        run: |
+          if ! docker ps -a --format '{{.Names}}' | grep -qx rank-redis; then
+            docker run -d --name rank-redis \
+              --restart unless-stopped \
+              -p 127.0.0.1:6380:6379 \
+              -v rank-redis-data:/data \
+              redis:7-alpine redis-server --save 60 1
+          else
+            docker start rank-redis >/dev/null
+          fi
+
+      - name: Restart container
+        run: |
+          docker rm -f "$CONTAINER" 2>/dev/null || true
+          docker run -d --name "$CONTAINER" \
+            --restart unless-stopped \
+            --network host \
+            --env-file "$DEPLOY_DIR/.env" \
+            "$IMAGE"
+          docker image prune -f
+          sleep 3
+          docker ps --filter "name=$CONTAINER"
+          docker logs --tail 20 "$CONTAINER"
