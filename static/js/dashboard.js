@@ -23,25 +23,54 @@ function levelDropdown(postId, current) {
     return `<select class="rowlevel" data-id="${postId}">${opts}</select>`;
 }
 
+// 분당 시도 수 막대그래프 (오래된 것 → 최근, 마지막 막대가 최근 1분)
+function sparkline(trend) {
+    const t = trend || [];
+    const w = 4, gap = 1, h = 24;
+    const max = Math.max(1, ...t);
+    const bars = t.map((v, i) => {
+        const bh = v === 0 ? 1 : Math.max(2, Math.round((v / max) * h));
+        const cls = i === t.length - 1 ? ' class="now"' : "";
+        return `<rect${cls} x="${i * (w + gap)}" y="${h - bh}" width="${w}" height="${bh}" rx="1"><title>${t.length - 1 - i}분 전: ${v}</title></rect>`;
+    }).join("");
+    return `<svg class="spark" width="${t.length * (w + gap)}" height="${h}">${bars}</svg>`;
+}
+
+function rateCell(p) {
+    const badge = p.spike ? '<span class="badge">급증</span>' : "";
+    return `<div class="rate">${sparkline(p.trend)}<span><span class="n">${p.per_min ?? 0}</span>${badge}`
+        + `<span class="base">평소 ${(p.baseline ?? 0).toFixed(1)}/분</span></span></div>`;
+}
+
+function renderAlert(posts) {
+    const el = document.getElementById("alert");
+    const hot = posts.filter(p => p.spike);
+    el.classList.toggle("on", hot.length > 0);
+    el.innerHTML = hot.length === 0 ? "" : "⚠ 급증 감지 — " + hot.map(p =>
+        `${escape(p.title)} (${escape(p.owner)}) 분당 ${p.per_min}건, 평소 ${p.baseline.toFixed(1)}건`).join(" · ");
+}
+
 async function refresh() {
     try {
         const res = await fetch("/api/dashboard");
         const data = await res.json();
         if (!res.ok) {
-            bodyEl.innerHTML = `<tr><td colspan="8">${escape(data.error || "오류")}</td></tr>`;
+            bodyEl.innerHTML = `<tr><td colspan="9">${escape(data.error || "오류")}</td></tr>`;
             return;
         }
         levelSel.value = String(data.default_level);
         const posts = data.posts || [];
         if (posts.length === 0) {
-            bodyEl.innerHTML = `<tr><td colspan="8">데이터 없음 (db/schema.sql 실행 필요)</td></tr>`;
+            bodyEl.innerHTML = `<tr><td colspan="9">데이터 없음 (db/schema.sql 실행 필요)</td></tr>`;
             return;
         }
+        renderAlert(posts);
         bodyEl.innerHTML = posts.map(p => `
-            <tr>
+            <tr class="${p.spike ? "spiking" : ""}">
                 <td>${escape(p.title)}</td>
                 <td>${escape(p.owner)}</td>
                 <td>${levelDropdown(p.id, p.level)}</td>
+                <td class="num">${rateCell(p)}</td>
                 <td class="num reflected">${p.view_count}</td>
                 <td class="num total">${p.total}</td>
                 <td class="num reflected">${p.reflected}</td>
@@ -49,7 +78,7 @@ async function refresh() {
                 <td>${reasonTags(p.reasons)}</td>
             </tr>`).join("");
     } catch (e) {
-        bodyEl.innerHTML = `<tr><td colspan="8">서버 응답 없음</td></tr>`;
+        bodyEl.innerHTML = `<tr><td colspan="9">서버 응답 없음</td></tr>`;
     }
 }
 

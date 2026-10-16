@@ -29,6 +29,24 @@
         .tag { display: inline-block; background: #0f172a; border: 1px solid #334155; border-radius: 6px;
                padding: 2px 7px; margin: 2px 3px 0 0; }
         .hint { color: #64748b; font-size: 12px; margin-top: 12px; line-height: 1.6; }
+
+        /* 급증 감지 */
+        .alert { display: none; margin-bottom: 16px; padding: 12px 16px; border-radius: 10px;
+                 background: #450a0a; border: 1px solid #dc2626; color: #fecaca; font-size: 14px; font-weight: 600; }
+        .alert.on { display: block; animation: pulse 1.2s ease-in-out infinite; }
+        @keyframes pulse { 50% { border-color: #7f1d1d; background: #2a0606; } }
+        tr.spiking td { background: #2a0a0a; }
+        tr.spiking td:first-child { box-shadow: inset 3px 0 0 #ef4444; }
+        .rate { display: flex; align-items: flex-end; gap: 8px; justify-content: flex-end; }
+        .rate .n { min-width: 28px; text-align: right; font-weight: 600; color: #e2e8f0; }
+        .rate .base { color: #64748b; font-size: 11px; display: block; text-align: right; }
+        .spark { display: block; }
+        .spark rect { fill: #38bdf8; }
+        .spiking .spark rect { fill: #f87171; }
+        .spark rect.now { fill: #e2e8f0; }
+        .spiking .spark rect.now { fill: #ef4444; }
+        .badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 6px; font-size: 11px;
+                 background: #dc2626; color: #fff; font-weight: 700; vertical-align: middle; }
     </style>
 </head>
 <body>
@@ -42,7 +60,7 @@
                 <option value="0">Lv0 — 방어 없음</option>
                 <option value="1">Lv1 — 쿠키 중복제거</option>
                 <option value="2">Lv2 — + IP 중복제거</option>
-                <option value="3">Lv3 — + 요청속도 제한</option>
+                <option value="3">Lv3 — + 실제 IP·요청속도 제한</option>
                 <option value="4">Lv4 — + 봇 판별</option>
                 <option value="5">Lv5 — + 열람증명</option>
             </select>
@@ -51,11 +69,14 @@
             <label style="margin-left:auto;"><input type="checkbox" id="auto" checked> 2초 자동 새로고침</label>
         </div>
 
+        <div id="alert" class="alert"></div>
+
         <table>
             <thead>
                 <tr>
                     <th>게시판</th><th>작성자</th>
                     <th>방어 레벨 (개인별)</th>
+                    <th class="num">분당 시도 (최근 15분)</th>
                     <th class="num">실제 조회수</th>
                     <th class="num">전체 요청</th>
                     <th class="num">반영</th>
@@ -63,12 +84,13 @@
                     <th>미반영 사유</th>
                 </tr>
             </thead>
-            <tbody id="body"><tr><td colspan="8">불러오는 중…</td></tr></tbody>
+            <tbody id="body"><tr><td colspan="9">불러오는 중…</td></tr></tbody>
         </table>
 
         <div class="hint">
             전체 요청 = 들어온 조회 시도 수 · 반영 = 조회수로 인정된 수 · 미반영 = 방어에 걸러진 수<br>
-            사유 코드: duplicate(중복) · rate_limited(속도초과) · bot(봇) · no_proof(열람증명 없음) · dwell_too_short(체류부족)
+            분당 시도 = 최근 1분 동안의 시도 수 (작은 글씨는 직전 30분 분당 평균). 최근 1분이 10건 이상이면서 평소의 3배 이상이면 <span class="badge">급증</span><br>
+            사유 코드: duplicate(중복) · rate_limited(속도초과) · bot(봇) · no_proof(열람증명 없음) · proof_mismatch(다른 IP/쿠키의 증명) · bad_pow(작업증명 실패) · dwell_too_short(체류부족)
         </div>
     </div>
     <script src="/js/dashboard.js"></script>

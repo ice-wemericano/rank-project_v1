@@ -122,6 +122,9 @@ func main() {
 		insecureTransport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
 	base := strings.TrimRight(*target, "/") // 끝 슬래시 제거 (// 방지)
+	if !strings.Contains(base, "://") {
+		base = "http://" + base // localhost:9090 처럼 스킴 없이 줘도 동작
+	}
 
 	spoof := *mode == "spoofip" || *mode == "browser" || *mode == "proof"
 	browser := *mode == "browser" || *mode == "proof"

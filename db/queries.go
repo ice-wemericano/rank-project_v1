@@ -40,7 +40,21 @@ type PostStats struct {
 	Reflected int            `json:"reflected"`  // 반영된 수
 	Rejected  int            `json:"rejected"`   // 반영 안 된 수
 	Reasons   map[string]int `json:"reasons"`    // 미반영 사유별 수
+
+	// 급증 감지 (최근 TrendMinutes 분, 분 단위)
+	PerMin   int     `json:"per_min"`  // 최근 1분 시도 수
+	Baseline float64 `json:"baseline"` // 그 전 BaselineMinutes 분의 분당 평균
+	Spike    bool    `json:"spike"`    // 평소보다 급증
+	Trend    []int   `json:"trend"`    // 분당 시도 수, 오래된 것 → 최근 순
 }
+
+// 급증 판정 기준 (실습하면서 조절해도 된다).
+const (
+	TrendMinutes    = 15 // 대시보드에 그릴 분당 그래프 길이
+	BaselineMinutes = 30 // "평소" 를 계산할 구간 (최근 1분 제외)
+	SpikeMin        = 10 // 최근 1분이 이 이상이어야 급증 후보 (소량 노이즈 무시)
+	SpikeFactor     = 3  // 평소 분당 평균의 몇 배 이상이면 급증
+)
 
 func ready() bool { return DB != nil }
 
@@ -158,7 +172,66 @@ func Dashboard() ([]PostStats, error) {
 			stats[i].Reasons[reason] = cnt
 		}
 	}
-	return stats, rrows.Err()
+	if err := rrows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := fillTrend(stats, index); err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
+// fillTrend 는 글별 분당 시도 수와 급증 여부를 채운다.
+// 기준 시각은 DB NOW() 대신 앱 시각을 넘긴다(INSERT 때와 같은 시간대로 직렬화되도록).
+func fillTrend(stats []PostStats, index map[int]int) error {
+	window := BaselineMinutes + 1
+	now := time.Now()
+	rows, err := DB.Query(`
+		SELECT post_id, TIMESTAMPDIFF(MINUTE, created_at, ?) AS ago, COUNT(*)
+		FROM view_events
+		WHERE created_at > ?
+		GROUP BY post_id, ago`,
+		now, now.Add(-time.Duration(window)*time.Minute))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	// perMinute[i][ago] : ago 분 전(0 = 최근 1분)의 시도 수
+	perMinute := make([][]int, len(stats))
+	for i := range perMinute {
+		perMinute[i] = make([]int, window)
+	}
+	for rows.Next() {
+		var pid, ago, cnt int
+		if err := rows.Scan(&pid, &ago, &cnt); err != nil {
+			return err
+		}
+		if i, ok := index[pid]; ok && ago >= 0 && ago < window {
+			perMinute[i][ago] += cnt
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for i := range stats {
+		m := perMinute[i]
+		sum := 0
+		for _, c := range m[1:] {
+			sum += c
+		}
+		s := &stats[i]
+		s.PerMin = m[0]
+		s.Baseline = float64(sum) / float64(BaselineMinutes)
+		s.Spike = s.PerMin >= SpikeMin && float64(s.PerMin) >= SpikeFactor*s.Baseline
+		s.Trend = make([]int, TrendMinutes)
+		for k := 0; k < TrendMinutes; k++ {
+			s.Trend[k] = m[TrendMinutes-1-k]
+		}
+	}
+	return nil
 }
 
 // ResetStats 는 모든 조회수와 이벤트 기록을 초기화한다 (레벨 바꿀 때 사용).
