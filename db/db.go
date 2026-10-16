@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	"rank-project_v1/logs"
+
 	_ "github.com/go-sql-driver/mysql"
 )
 
@@ -38,7 +40,7 @@ func Init() error {
 		return err
 	}
 
-	fmt.Println("DB connected")
+	logs.Log("DB", "DB connected")
 
 	return nil
 }
