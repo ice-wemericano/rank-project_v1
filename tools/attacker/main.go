@@ -4,18 +4,23 @@
 // 실제 반영/미반영(사유별) 집계를 출력한다. 대시보드와 비교해보면 된다.
 //
 // 사용 예:
-//   go run ./tools/attacker -url http://localhost:9090 -id 1 -mode naive   -n 50
-//   go run ./tools/attacker -url https://rank.neverwe.com -id 1 -mode spoofip -n 200 -c 20
+//
+//	go run ./tools/attacker -url http://localhost:9090 -id 1 -mode naive   -n 50
+//	go run ./tools/attacker -url https://rank.neverwe.com -id 1 -mode spoofip -n 200 -c 20
 //
 // 모드별 겨냥 레벨:
-//   naive    같은 신원으로 반복        → Lv0 돌파 (Lv1부터 중복으로 막힘)
-//   fresh    매 요청 새 신원(쿠키 없음) → Lv1 돌파 (Lv2부터 IP로 막힘)
-//   spoofip  fresh + X-Forwarded-For 위조 → Lv2·Lv3 돌파 (Lv4 봇판별로 막힘)
-//   browser  spoofip + 브라우저 헤더 위장  → Lv4 돌파 (Lv5 열람증명으로 막힘)
-//   proof    browser + open→체류→view 정식흐름 → Lv5까지 돌파
+//
+//	naive    같은 신원으로 반복        → Lv0 돌파 (Lv1부터 중복으로 막힘)
+//	fresh    매 요청 새 신원(쿠키 없음) → Lv1 돌파 (Lv2부터 IP로 막힘)
+//	spoofip  fresh + X-Forwarded-For 위조 → Lv2 돌파 (Lv3 부터 실제 IP 로 판정해 막힘)
+//	browser  spoofip + 브라우저 헤더 위장  → (실제 IP 가 여러 개면) Lv4 돌파
+//	proof    browser + open→체류→PoW→view 정식흐름 → (실제 IP 가 여러 개면) Lv5 돌파
+//
+// Lv3 이상은 "실제 접속 IP 당 하루 1회"라서, 한 PC 에서는 모드와 상관없이 글당 1회만 반영된다.
 package main
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -25,6 +30,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -51,12 +57,36 @@ type viewResp struct {
 }
 
 type openResp struct {
-	ProofToken string `json:"proof_token"`
-	MinDwellMS int64  `json:"min_dwell_ms"`
+	ProofToken   string `json:"proof_token"`
+	MinDwellMS   int64  `json:"min_dwell_ms"`
+	PoWChallenge string `json:"pow_challenge"`
+	PoWBits      int    `json:"pow_bits"`
+}
+
+// solvePoW 는 sha256(challenge+":"+n) 의 선행 0 비트가 bits 이상인 n 을 찾는다(서버 CheckPoW 와 동일).
+func solvePoW(challenge string, bits int) string {
+	for n := 0; ; n++ {
+		s := strconv.Itoa(n)
+		sum := sha256.Sum256([]byte(challenge + ":" + s))
+		ok := true
+		for i := 0; i < bits; i++ {
+			if sum[i/8]&(0x80>>(i%8)) != 0 {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return s
+		}
+	}
 }
 
 const browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
-const browserAccept = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+const browserAccept = "*/*"
+const browserLang = "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
+
+// referer 는 browser 모드에서 붙일 글 페이지 주소(동일 출처 Referer 검사 통과용).
+var referer string
 
 func newJar() (http.CookieJar, error) { return cookiejar.New(nil) }
 
@@ -99,6 +129,7 @@ func main() {
 	// naive 는 하나의 신원(쿠키 공유), 나머지는 매 요청 새 신원
 	shared := *mode == "naive"
 
+	referer = fmt.Sprintf("%s/post.html?id=%d", base, *id)
 	viewURL := fmt.Sprintf("%s/api/posts/view?id=%d", base, *id)
 	openURL := fmt.Sprintf("%s/api/posts/open?id=%d", base, *id)
 	hbURL := fmt.Sprintf("%s/api/posts/heartbeat?id=%d", base, *id)
@@ -189,10 +220,13 @@ func main() {
 // proof 모드면 open → (체류하는 동안 1초마다 heartbeat) → view 로 Lv5 열람증명을 흉내 낸다.
 func attackOnce(client *http.Client, viewURL, openURL, hbURL string, spoof, browser, useProof bool) viewResp {
 	ip := randomIP()
-	pt := ""
+	pt, pow := "", ""
 	if useProof {
-		var dwell int64
-		pt, dwell = doOpen(client, openURL, ip, browser)
+		o := doOpen(client, openURL, ip, browser)
+		pt, dwell := o.ProofToken, o.MinDwellMS
+		if o.PoWChallenge != "" {
+			pow = solvePoW(o.PoWChallenge, o.PoWBits)
+		}
 		if pt != "" {
 			// 서버가 실제 체류를 heartbeat 로 누적하므로, 머무는 흉내로 heartbeat 를 보낸다.
 			beats := int(dwell/1000) + 2
@@ -204,29 +238,27 @@ func attackOnce(client *http.Client, viewURL, openURL, hbURL string, spoof, brow
 	}
 	u := viewURL
 	if pt != "" {
-		u += "&pt=" + url.QueryEscape(pt)
+		u += "&pt=" + url.QueryEscape(pt) + "&pow=" + url.QueryEscape(pow)
 	}
 	return doView(client, u, ip, spoof, browser)
 }
 
-func doOpen(client *http.Client, u, ip string, browser bool) (string, int64) {
+func doOpen(client *http.Client, u, ip string, browser bool) openResp {
+	var o openResp
 	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
-		return "", 0
+		return o
 	}
 	setHeaders(req, ip, true, browser) // open 은 항상 IP 위조 허용
 	resp, err := client.Do(req)
 	if err != nil {
 		recordErr(err.Error())
-		return "", 0
+		return o
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	var o openResp
-	if json.Unmarshal(body, &o) != nil {
-		return "", 0
-	}
-	return o.ProofToken, o.MinDwellMS
+	_ = json.Unmarshal(body, &o)
+	return o
 }
 
 func doHeartbeat(client *http.Client, u, ip string, browser bool) {
@@ -267,5 +299,7 @@ func setHeaders(req *http.Request, ip string, spoof, browser bool) {
 	if browser {
 		req.Header.Set("User-Agent", browserUA) // Lv4 봇판별 우회
 		req.Header.Set("Accept", browserAccept)
+		req.Header.Set("Accept-Language", browserLang)
+		req.Header.Set("Referer", referer)
 	}
 }

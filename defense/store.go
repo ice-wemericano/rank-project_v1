@@ -29,8 +29,11 @@ type Store interface {
 	PutProof(nonce string, p ProofState, ttl time.Duration) error
 	GetProof(nonce string) (*ProofState, error)
 	ConsumeProof(nonce string) (*ProofState, error) // 원자적 get+delete (재사용 차단)
-	// Flush 는 모든 방어 상태를 초기화한다(reset 용).
+	// Flush 는 모든 방어 상태를 초기화한다(reset 용). 레벨 설정은 지우지 않는다.
 	Flush() error
+	// SaveLevels / LoadLevels 는 방어 레벨 설정을 보존한다(재시작·재배포 후에도 유지).
+	SaveLevels(b []byte) error
+	LoadLevels() ([]byte, error)
 }
 
 // ---------- 메모리 구현 ----------
@@ -40,6 +43,7 @@ type MemoryStore struct {
 	lastHit map[string]time.Time
 	hits    map[string][]time.Time
 	proofs  map[string]*ProofState
+	levels  []byte
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -114,6 +118,19 @@ func (m *MemoryStore) Flush() error {
 	m.proofs = map[string]*ProofState{}
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *MemoryStore) SaveLevels(b []byte) error {
+	m.mu.Lock()
+	m.levels = append([]byte(nil), b...)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *MemoryStore) LoadLevels() ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.levels, nil
 }
 
 // ---------- Redis 구현 ----------
@@ -215,4 +232,22 @@ func (r *RedisStore) Flush() error {
 		}
 	}
 	return nil
+}
+
+const levelsKey = "config:levels" // Flush 대상(dedup/rate/proof) 아님
+
+func (r *RedisStore) SaveLevels(b []byte) error {
+	ctx, cancel := ctxTimeout()
+	defer cancel()
+	return r.c.Set(ctx, levelsKey, b, 0).Err()
+}
+
+func (r *RedisStore) LoadLevels() ([]byte, error) {
+	ctx, cancel := ctxTimeout()
+	defer cancel()
+	b, err := r.c.Get(ctx, levelsKey).Bytes()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	return b, err
 }

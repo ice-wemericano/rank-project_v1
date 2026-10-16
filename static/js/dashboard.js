@@ -4,7 +4,7 @@ const autoChk = document.getElementById("auto");
 
 const LEVELS = [
     [0, "Lv0 없음"], [1, "Lv1 쿠키"], [2, "Lv2 +IP"],
-    [3, "Lv3 +속도"], [4, "Lv4 +봇"], [5, "Lv5 +열람증명"],
+    [3, "Lv3 +실IP·속도"], [4, "Lv4 +봇"], [5, "Lv5 +열람증명"],
 ];
 
 function escape(s) {

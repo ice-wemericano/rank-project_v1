@@ -63,13 +63,14 @@ type proofPayload struct {
 	Nonce    string `json:"n"`
 	PostID   int    `json:"p"`
 	IP       string `json:"ip"`
+	Owner    string `json:"o"` // 발급 시점의 쿠키 토큰 (다른 브라우저로 넘겨 쓰기 차단)
 	IssuedAt int64  `json:"t"` // unix ms
 }
 
 // IssueProofToken 은 서명된 열람증명 토큰과 nonce 를 만든다.
-func IssueProofToken(postID int, ip string) (token, nonce string) {
+func IssueProofToken(postID int, ip, owner string) (token, nonce string) {
 	nonce = NewIdentityToken()
-	payload := proofPayload{Nonce: nonce, PostID: postID, IP: ip, IssuedAt: time.Now().UnixMilli()}
+	payload := proofPayload{Nonce: nonce, PostID: postID, IP: ip, Owner: owner, IssuedAt: time.Now().UnixMilli()}
 	b, _ := json.Marshal(payload)
 	body := base64.RawURLEncoding.EncodeToString(b)
 	return body + "." + sign(body), nonce

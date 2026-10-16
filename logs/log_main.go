@@ -33,7 +33,7 @@ func fileFor(tag string) *os.File {
 // 해당 경로에 로그 찍기
 func Log(tag, msg string) {
 	now := time.Now()
-	line := fmt.Sprintf("%s%03d [%s] %s\n", now.Format("2006_01_02_15:04:"), now.Nanosecond()/1e6, tag, msg)
+	line := fmt.Sprintf("%s%03d [%s] %s\n", now.Format("2006_01_02_15:04:05."), now.Nanosecond()/1e6, tag, msg)
 
 	fmt.Print(line)
 

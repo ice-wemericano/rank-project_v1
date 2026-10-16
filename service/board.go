@@ -36,8 +36,8 @@ func Open(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 정상 사용자에게 식별용 쿠키 발급 (Lv1 식별용)
-	ensureCookie(w, r)
+	// 정상 사용자에게 식별용 쿠키 발급 (Lv1 식별용). 열람증명은 이 쿠키에 묶인다.
+	owner := ensureCookie(w, r)
 
 	post, err := db.GetPost(id)
 	if err == db.ErrNoDB {
@@ -50,24 +50,27 @@ func Open(w http.ResponseWriter, r *http.Request) {
 	}
 
 	post.Level = defense.LevelFor(id)
-	proof := defense.IssueProof(id, clientIP(r))
+	proof, challenge := defense.IssueProof(id, realIP(r), owner)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"post":         post,
-		"proof_token":  proof,
-		"min_dwell_ms": defense.MinDwell.Milliseconds(),
+		"post":          post,
+		"proof_token":   proof,
+		"min_dwell_ms":  defense.MinDwell.Milliseconds(),
+		"pow_challenge": challenge,
+		"pow_bits":      defense.PoWBits,
 	})
 }
 
 // Heartbeat 는 글을 보고 있는 동안 주기적으로 호출된다(Lv5).
 // 서버가 실제 체류시간을 누적한다. 클라이언트가 보낸 체류시간을 믿지 않는다.
-//   GET /api/posts/heartbeat?id=1&pt=<proof_token>
+//
+//	GET /api/posts/heartbeat?id=1&pt=<proof_token>
 func Heartbeat(w http.ResponseWriter, r *http.Request) {
 	id := atoiDefault(r.URL.Query().Get("id"), 0)
 	if id == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id 필요"})
 		return
 	}
-	ok := defense.Heartbeat(id, r.URL.Query().Get("pt"), clientIP(r))
+	ok := defense.Heartbeat(id, r.URL.Query().Get("pt"), realIP(r))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": ok})
 }
 
@@ -82,16 +85,21 @@ func View(w http.ResponseWriter, r *http.Request) {
 	// 이번 요청의 식별자로는 쓰지 않는다(쿠키를 매번 지우면 Lv1 을 우회하게 됨).
 	token := sentToken(r)
 	ensureCookie(w, r)
-	ip := clientIP(r)
+	ip := realIP(r)
 	now := time.Now()
 
 	decision := defense.Judge(defense.Attempt{
 		PostID:     id,
 		IP:         ip,
+		ClaimedIP:  claimedIP(r),
 		Token:      token,
 		UserAgent:  r.UserAgent(),
 		Accept:     r.Header.Get("Accept"),
+		AcceptLang: r.Header.Get("Accept-Language"),
+		Referer:    r.Referer(),
+		Host:       r.Host,
 		ProofToken: r.URL.Query().Get("pt"),
+		PoW:        r.URL.Query().Get("pow"),
 		Now:        now,
 	})
 

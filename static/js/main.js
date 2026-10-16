@@ -27,7 +27,7 @@ function escape(s) {
     return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
-const LEVEL_NAMES = ["Lv0 없음", "Lv1 쿠키", "Lv2 +IP", "Lv3 +속도", "Lv4 +봇", "Lv5 +열람증명"];
+const LEVEL_NAMES = ["Lv0 없음", "Lv1 쿠키", "Lv2 +IP", "Lv3 +실IP·속도", "Lv4 +봇", "Lv5 +열람증명"];
 function levelName(l) { return LEVEL_NAMES[l] || ("Lv" + l); }
 
 load();
