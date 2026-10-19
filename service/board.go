@@ -74,6 +74,31 @@ func Heartbeat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": ok})
 }
 
+// RegisterKey 는 Lv7 디바이스 공개키를 현재 신원(owner 쿠키)에 묶어 서명한 dkey 쿠키를 발급한다.
+//
+//	POST /api/posts/register-key?pub=<SPKI base64url>
+func RegisterKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST 필요"})
+		return
+	}
+	pub := r.URL.Query().Get("pub")
+	if pub == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "pub 필요"})
+		return
+	}
+	owner := ensureCookie(w, r) // 식별용 쿠키 보장 + owner 확보
+	dtoken := defense.IssueDeviceToken(owner, pub)
+	http.SetCookie(w, &http.Cookie{
+		Name:     deviceCookie,
+		Value:    dtoken,
+		Path:     "/",
+		HttpOnly: false,
+		MaxAge:   60 * 60 * 24,
+	})
+	writeJSON(w, http.StatusOK, map[string]string{"dkey": dtoken})
+}
+
 func View(w http.ResponseWriter, r *http.Request) {
 	id := atoiDefault(r.URL.Query().Get("id"), 0)
 	if id == 0 {
@@ -98,9 +123,11 @@ func View(w http.ResponseWriter, r *http.Request) {
 		AcceptLang: r.Header.Get("Accept-Language"),
 		Referer:    r.Referer(),
 		Host:       r.Host,
-		ProofToken: r.URL.Query().Get("pt"),
-		PoW:        r.URL.Query().Get("pow"),
-		Now:        now,
+		ProofToken:  r.URL.Query().Get("pt"),
+		PoW:         r.URL.Query().Get("pow"),
+		DeviceToken: sentDeviceToken(r),
+		DeviceSig:   r.URL.Query().Get("dsig"),
+		Now:         now,
 	})
 
 	// 반영 결정 시 조회수 증가 (원자적 UPDATE)
@@ -122,9 +149,18 @@ func View(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: now,
 	})
 
+	// Lv9: 응답 불투명화(섀도밴). 공격자에게 "왜 막혔는지" 오라클을 주지 않는다.
+	// 진짜 판정(decision)은 위에서 이미 DB 에 그대로 기록했고, 조회수도 진짜 판정대로만 증가한다.
+	// 공개 응답만 항상 "반영됨"처럼 보이게 가린다 → 공격자는 성공/실패를 구분하지 못한다.
+	lvl := defense.LevelFor(id)
+	counted, reason := decision.Counted, decision.Reason
+	if lvl >= 9 {
+		counted, reason = true, defense.ReasonCounted
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"counted": decision.Counted,
-		"reason":  decision.Reason,
-		"level":   defense.LevelFor(id),
+		"counted": counted,
+		"reason":  reason,
+		"level":   lvl,
 	})
 }

@@ -25,6 +25,7 @@
         .reflected { color: #4ade80; font-weight: 600; }
         .rejected { color: #fbbf24; font-weight: 600; }
         .total { color: #38bdf8; font-weight: 600; }
+        .scrubbed { color: #c084fc; font-weight: 700; }
         .reasons { color: #94a3b8; font-size: 12px; }
         .tag { display: inline-block; background: #0f172a; border: 1px solid #334155; border-radius: 6px;
                padding: 2px 7px; margin: 2px 3px 0 0; }
@@ -63,6 +64,11 @@
                 <option value="3">Lv3 — + 실제 IP·요청속도 제한</option>
                 <option value="4">Lv4 — + 봇 판별</option>
                 <option value="5">Lv5 — + 열람증명</option>
+                <option value="6">Lv6 — + 사후 스크러빙(소급 차감)</option>
+                <option value="7">Lv7 — + 디바이스 소유증명(WebCrypto 서명)</option>
+                <option value="8">Lv8 — + ML 이상탐지(집중도 점수)</option>
+                <option value="9">Lv9 — + 불투명 응답(섀도밴)</option>
+                <option value="10">Lv10 — + 평판(데이터센터 대역)·행동 그래프 군집</option>
             </select>
             <button id="apply">기본 레벨 적용</button>
             <button id="reset" class="reset">조회수·기록 초기화</button>
@@ -82,15 +88,19 @@
                     <th class="num">반영</th>
                     <th class="num">미반영</th>
                     <th>미반영 사유</th>
+                    <th class="num">소급 차감 (Lv6)</th>
                 </tr>
             </thead>
-            <tbody id="body"><tr><td colspan="9">불러오는 중…</td></tr></tbody>
+            <tbody id="body"><tr><td colspan="10">불러오는 중…</td></tr></tbody>
         </table>
 
         <div class="hint">
             전체 요청 = 들어온 조회 시도 수 · 반영 = 조회수로 인정된 수 · 미반영 = 방어에 걸러진 수<br>
             분당 시도 = 최근 1분 동안의 시도 수 (작은 글씨는 직전 30분 분당 평균). 최근 1분이 10건 이상이면서 평소의 3배 이상이면 <span class="badge">급증</span><br>
-            사유 코드: duplicate(중복) · rate_limited(속도초과) · bot(봇) · no_proof(열람증명 없음) · proof_mismatch(다른 IP/쿠키의 증명) · bad_pow(작업증명 실패) · dwell_too_short(체류부족)
+            사유 코드: duplicate(중복) · rate_limited(속도초과) · bot(봇) · no_proof(열람증명 없음) · proof_mismatch(다른 IP/쿠키의 증명) · bad_pow(작업증명 실패) · dwell_too_short(체류부족) · no_device/bad_device(Lv7 디바이스 증명 없음·실패)<br>
+            <b>소급 차감 (Lv6 사후 스크러빙)</b>: 인라인으로는 통과했지만, 집계를 다시 보니 분산 공격으로 판정돼 나중에 깎인 수. 실제 조회수 = 반영 − 소급차감.<br>
+            scrub_ua_mono(여러 IP가 같은 UA = 프록시/봇 풀) · scrub_subnet(같은 /24·/64 대역에 IP 집중 = 데이터센터/프록시) · scrub_anomaly(Lv8: 하드 규칙을 아슬아슬하게 피했지만 집중도 이상점수 초과) · scrub_cluster(Lv10: 행동 그래프에서 한 캠페인으로 묶임) · scrub_rep(Lv10: 데이터센터/프록시 평판 대역)<br>
+            <b>Lv9 불투명 응답</b>: 공격자에게 성공/실패를 알려주지 않음(항상 "반영됨"으로 응답). 진짜 판정은 서버·대시보드에만 남는다.
         </div>
     </div>
     <script src="/js/dashboard.js"></script>

@@ -11,6 +11,7 @@ import (
 )
 
 const viewCookie = "vtoken"
+const deviceCookie = "dkey" // Lv7: owner 에 묶인 공개키를 담은 서명 토큰
 
 // writeJSON 은 공통 JSON 응답 헬퍼.
 func writeJSON(w http.ResponseWriter, status int, body interface{}) {
@@ -76,6 +77,15 @@ func ensureCookie(w http.ResponseWriter, r *http.Request) string {
 		MaxAge:   60 * 60 * 24,
 	})
 	return tok
+}
+
+// sentDeviceToken 은 클라이언트가 보낸 dkey 쿠키 값을 그대로 돌려준다(서명 검증은 defense 가 한다).
+func sentDeviceToken(r *http.Request) string {
+	c, err := r.Cookie(deviceCookie)
+	if err != nil {
+		return ""
+	}
+	return c.Value
 }
 
 func atoiDefault(s string, def int) int {

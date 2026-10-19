@@ -34,6 +34,15 @@ const (
 	ReasonDwellShort  = "dwell_too_short" // 체류시간 미달 (heartbeat 누적 부족)
 	ReasonProofBind   = "proof_mismatch"  // 열람증명이 다른 IP/쿠키에서 발급됨 (토큰 공유·탈취)
 	ReasonBadPoW      = "bad_pow"         // 작업증명(PoW) 없음/틀림
+	ReasonNoDevice    = "no_device"       // Lv7: 디바이스 토큰 없음/위조/신원 불일치
+	ReasonBadDevice   = "bad_device"      // Lv7: 디바이스 서명이 챌린지와 맞지 않음
+
+	// Lv6 사후 스크러빙(비동기)에서 소급 차감한 사유. 인라인 Judge 가 아니라 scrubber 가 기록한다.
+	ReasonScrubUAMono  = "scrub_ua_mono" // 여러 IP가 동일 UA 공유 (프록시/봇 풀 - 경로 B)
+	ReasonScrubSubnet  = "scrub_subnet"  // 같은 서브넷(/24·/64)에 IP 집중 (데이터센터/프록시 대역)
+	ReasonScrubAnomaly = "scrub_anomaly" // Lv8: 여러 약한 신호 합산 이상점수 초과 (하드 규칙 회피형)
+	ReasonScrubCluster = "scrub_cluster" // Lv10: 행동 그래프에서 한 캠페인(연결 요소)으로 묶임
+	ReasonScrubRep     = "scrub_rep"     // Lv10: 데이터센터/프록시 평판 대역 IP
 )
 
 // 방어 파라미터 (실습하면서 값을 조절해도 된다).
@@ -67,9 +76,11 @@ type Attempt struct {
 	AcceptLang string
 	Referer    string
 	Host       string // 요청 Host (Referer 동일 출처 확인용)
-	ProofToken string // 열람증명 토큰 (Lv5)
-	PoW        string // 작업증명 답 (Lv5)
-	Now        time.Time
+	ProofToken  string // 열람증명 토큰 (Lv5)
+	PoW         string // 작업증명 답 (Lv5)
+	DeviceToken string // 디바이스 토큰 (dkey 쿠키; owner 에 묶인 공개키, Lv7)
+	DeviceSig   string // 챌린지(열람증명 nonce)에 대한 디바이스 서명 (Lv7)
+	Now         time.Time
 }
 
 type Decision struct {
@@ -89,8 +100,8 @@ func clamp(l int) int {
 	if l < 0 {
 		return 0
 	}
-	if l > 5 {
-		return 5
+	if l > 10 {
+		return 10
 	}
 	return l
 }
@@ -242,6 +253,16 @@ func Judge(a Attempt) Decision {
 		}
 		if !CheckPoW(p.Nonce, a.PoW, PoWBits) {
 			return Decision{false, ReasonBadPoW}
+		}
+		// Lv7 : 디바이스 소유증명 — 신원(owner)에 묶인 공개키로 챌린지(nonce) 서명을 검증.
+		if lvl >= 7 {
+			pub, ok := VerifyDeviceToken(a.DeviceToken, a.Token)
+			if !ok {
+				return Decision{false, ReasonNoDevice}
+			}
+			if !VerifyDeviceSig(pub, p.Nonce, a.DeviceSig) {
+				return Decision{false, ReasonBadDevice}
+			}
 		}
 		st, err := store.ConsumeProof(p.Nonce) // 원자적 get+delete: 재사용 차단
 		if err != nil || st == nil {

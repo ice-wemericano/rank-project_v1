@@ -6,8 +6,66 @@ function escape(s) {
     return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
-const LEVEL_NAMES = ["Lv0 없음", "Lv1 쿠키", "Lv2 +IP", "Lv3 +실IP·속도", "Lv4 +봇", "Lv5 +열람증명"];
+const LEVEL_NAMES = ["Lv0 없음", "Lv1 쿠키", "Lv2 +IP", "Lv3 +실IP·속도", "Lv4 +봇", "Lv5 +열람증명",
+    "Lv6 +사후스크럽", "Lv7 +디바이스증명", "Lv8 +이상탐지", "Lv9 +불투명", "Lv10 +평판·그래프"];
 function levelName(l) { return LEVEL_NAMES[l] || ("Lv" + l); }
+
+// ---- Lv7 디바이스 소유증명: 비추출 ECDSA 키로 챌린지(열람증명 nonce)를 서명한다 ----
+// 개인키는 WebCrypto 로 만들어 IndexedDB 에 보관(비추출 → 복제·공유 불가). crypto.subtle 은
+// 보안 컨텍스트(https 또는 localhost)에서만 쓸 수 있다.
+function b64url(buf) {
+    let s = "";
+    for (const x of new Uint8Array(buf)) s += String.fromCharCode(x);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function idbOpen() {
+    return new Promise((res, rej) => {
+        const r = indexedDB.open("rankdev", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("keys");
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+    });
+}
+function idbGet(db, k) {
+    return new Promise((res, rej) => {
+        const t = db.transaction("keys", "readonly").objectStore("keys").get(k);
+        t.onsuccess = () => res(t.result);
+        t.onerror = () => rej(t.error);
+    });
+}
+function idbPut(db, k, v) {
+    return new Promise((res, rej) => {
+        const t = db.transaction("keys", "readwrite").objectStore("keys").put(v, k);
+        t.onsuccess = () => res();
+        t.onerror = () => rej(t.error);
+    });
+}
+async function getDeviceKey() {
+    const db = await idbOpen();
+    let kp = await idbGet(db, "kp");
+    if (!kp) {
+        // 비추출 개인키(false) + 추출 가능한 공개키(규격상 공개키는 항상 추출 가능).
+        kp = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+        await idbPut(db, "kp", kp);
+    }
+    return kp;
+}
+// challenge 를 디바이스 키로 서명하고 공개키를 신원에 등록한 뒤 dsig(base64url)를 돌려준다.
+// 보안 컨텍스트가 아니거나 실패하면 "" (→ 서버에서 no_device 로 막힘, 정직한 동작).
+async function deviceSign(challenge) {
+    if (!(window.crypto && crypto.subtle && window.indexedDB)) return "";
+    try {
+        const kp = await getDeviceKey();
+        const spki = await crypto.subtle.exportKey("spki", kp.publicKey);
+        // 공개키를 owner 에 묶어 등록(서버가 dkey 쿠키 발급). view 전에 끝나야 쿠키가 함께 전송된다.
+        await fetch(`/api/posts/register-key?pub=${b64url(spki)}`, { method: "POST" });
+        const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, kp.privateKey,
+            new TextEncoder().encode(challenge));
+        return b64url(sig);
+    } catch (e) {
+        return "";
+    }
+}
 
 // ---- 작업증명(PoW): sha256(challenge + ":" + n) 의 선행 0 비트가 bits 이상인 n 을 찾는다 ----
 // crypto.subtle 은 https 에서만 쓸 수 있어서(http://IP:포트 접속 대비) 순수 JS SHA-256 을 쓴다.
@@ -109,8 +167,17 @@ async function run() {
         const pow = await powP;
         clearInterval(hb);
         await beat(); // 마지막 heartbeat 로 잔여 체류 반영
+
+        // Lv7: 디바이스 키로 열람증명 nonce(= pow_challenge)를 서명해 동봉한다.
+        let dsig = "";
+        if (post.level >= 7) {
+            dsig = await deviceSign(open.pow_challenge);
+            if (!dsig) statusEl.textContent = "Lv7 디바이스 증명은 https 또는 localhost 에서만 가능합니다.";
+        }
+        const viewURL = `/api/posts/view?id=${id}&pt=${pt}&pow=${encodeURIComponent(pow)}`
+            + (dsig ? `&dsig=${encodeURIComponent(dsig)}` : "");
         try {
-            const res = await fetch(`/api/posts/view?id=${id}&pt=${pt}&pow=${encodeURIComponent(pow)}`);
+            const res = await fetch(viewURL);
             const r = await res.json();
             if (r.counted) {
                 statusEl.innerHTML = `<span class="ok">✔ 조회수에 반영되었습니다.</span> (방어 Lv${r.level})`;

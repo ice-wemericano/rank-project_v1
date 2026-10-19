@@ -17,9 +17,17 @@
 //	proof    browser + open→체류→PoW→view 정식흐름 → (실제 IP 가 여러 개면) Lv5 돌파
 //
 // Lv3 이상은 "실제 접속 IP 당 하루 1회"라서, 한 PC 에서는 모드와 상관없이 글당 1회만 반영된다.
+//
+// 경로 B (-proxies): 신원마다 다른 프록시로 TCP 를 내보내 '실제 소스 IP'를 분산한다.
+// XFF 조작(경로 A)과 달리, 서버가 실제 egress 를 보더라도 각 신원이 다른 IP 라서 Lv3~5 를 통과한다.
+// 한 신원의 open/heartbeat/view 는 같은 프록시로 고정된다(열람증명이 open 시점 IP 에 묶이므로).
+// 다만 Lv6~8(사후 스크러빙)은 "여러 IP 가 같은 UA/대역/버스트"를 집계로 잡아 소급 차감한다.
+//
+//	go run ./tools/attacker -url https://rank.neverwe.com -id 1 -mode proof -proxies proxies.txt -n 200 -c 20 -k
 package main
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
@@ -30,6 +38,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -109,6 +118,45 @@ func randomIP() string {
 	return fmt.Sprintf("%d.%d.%d.%d", rand.Intn(223)+1, rand.Intn(256), rand.Intn(256), rand.Intn(254)+1)
 }
 
+// loadProxies 는 프록시 목록 파일을 읽는다(빈 줄과 # 주석 줄은 건너뜀).
+func loadProxies(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var out []string
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out, sc.Err()
+}
+
+// transportFor 는 프록시/인증서 옵션에 맞는 Transport 를 만든다(둘 다 없으면 nil = 기본 Transport).
+// socks5:// 와 http(s):// 스킴을 지원한다(net/http 가 socks5 프록시를 직접 지원).
+func transportFor(proxyURL string, insecure bool) *http.Transport {
+	if proxyURL == "" && !insecure {
+		return nil
+	}
+	tr := &http.Transport{}
+	if proxyURL != "" {
+		if u, err := url.Parse(proxyURL); err == nil {
+			tr.Proxy = http.ProxyURL(u)
+		} else {
+			recordErr("프록시 주소 파싱 실패: " + proxyURL)
+		}
+	}
+	if insecure {
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	return tr
+}
+
 func main() {
 	target := flag.String("url", "http://localhost:9090", "서버 주소")
 	id := flag.Int("id", 1, "공격할 게시글 id")
@@ -116,6 +164,8 @@ func main() {
 	c := flag.Int("c", 10, "동시 실행 수")
 	mode := flag.String("mode", "naive", "naive|fresh|spoofip|browser|proof")
 	insecure := flag.Bool("k", false, "TLS 인증서 검증 생략 (자체서명 인증서 대상)")
+	proxiesFile := flag.String("proxies", "", "프록시 목록 파일(한 줄에 하나: http://host:port 또는 socks5://user:pass@host:port). "+
+		"지정 시 경로 B — 신원마다 다른 프록시로 TCP 를 내보내 '실제 소스 IP'를 분산한다(XFF 조작과 달리 견고한 프록시도 통과).")
 	flag.Parse()
 
 	if *insecure {
@@ -126,11 +176,34 @@ func main() {
 		base = "http://" + base // localhost:9090 처럼 스킴 없이 줘도 동작
 	}
 
+	// 경로 B: 프록시 목록을 읽는다. 신원마다 라운드로빈으로 하나씩 골라 그 신원의
+	// 모든 요청(open/heartbeat/view)을 같은 프록시로 보낸다(열람증명은 open 시점 IP 에 묶이므로).
+	var proxies []string
+	if *proxiesFile != "" {
+		ps, err := loadProxies(*proxiesFile)
+		if err != nil {
+			fmt.Printf("프록시 목록을 읽을 수 없습니다: %s\n", err)
+			return
+		}
+		if len(ps) == 0 {
+			fmt.Printf("프록시 목록이 비어 있습니다: %s\n", *proxiesFile)
+			return
+		}
+		proxies = ps
+	}
+
 	spoof := *mode == "spoofip" || *mode == "browser" || *mode == "proof"
 	browser := *mode == "browser" || *mode == "proof"
 	useProof := *mode == "proof"
 	// naive 는 하나의 신원(쿠키 공유), 나머지는 매 요청 새 신원
 	shared := *mode == "naive"
+
+	// 프록시를 쓰면 실제 egress IP 가 곧 서버가 보는 '실제 IP'다. XFF 조작은 무의미하고
+	// 오히려 Lv2 경로와 섞이므로 끈다(경로 A 가 아니라 경로 B 를 정확히 재현).
+	if len(proxies) > 0 {
+		spoof = false
+		shared = false // 프록시마다 독립 신원
+	}
 
 	referer = fmt.Sprintf("%s/post.html?id=%d", base, *id)
 	viewURL := fmt.Sprintf("%s/api/posts/view?id=%d", base, *id)
@@ -151,11 +224,12 @@ func main() {
 	}
 
 	// naive 모드는 하나의 신원(쿠키 공유). 나머지는 매 요청 새 신원.
+	// proxyURL 이 비어 있지 않으면 그 신원의 모든 요청을 해당 프록시로 내보낸다(경로 B).
 	var sharedJar http.CookieJar
-	newClient := func() *http.Client {
+	newClient := func(proxyURL string) *http.Client {
 		c := &http.Client{Timeout: 15 * time.Second}
-		if insecureTransport != nil {
-			c.Transport = insecureTransport
+		if tr := transportFor(proxyURL, *insecure); tr != nil {
+			c.Transport = tr
 		}
 		if shared {
 			c.Jar = sharedJar
@@ -164,9 +238,16 @@ func main() {
 		}
 		return c
 	}
+	// pickProxy 는 i 번째 신원이 쓸 프록시를 라운드로빈으로 고른다(없으면 "" = 직접 접속).
+	pickProxy := func(i int) string {
+		if len(proxies) == 0 {
+			return ""
+		}
+		return proxies[i%len(proxies)]
+	}
 
-	// 프리플라이트: 서버에 실제로 닿는지 먼저 확인한다.
-	if msg := preflight(newClient(), viewURL); msg != "" {
+	// 프리플라이트: 서버에 실제로 닿는지 먼저 확인한다(프록시가 있으면 첫 프록시로).
+	if msg := preflight(newClient(pickProxy(0)), viewURL); msg != "" {
 		fmt.Printf("서버에 연결할 수 없습니다: %s\n\n확인하세요:\n"+
 			"  1) 서버가 떠 있는지 (go run . 또는 rank.exe)\n"+
 			"  2) -url 값이 맞는지 (현재: %s)\n"+
@@ -181,7 +262,7 @@ func main() {
 		sharedJar, _ = newJar()
 		// 쿠키를 먼저 확보해, 동시성 때문에 여러 건이 새는 것을 막는다(= 신원 1개 효과).
 		if remaining > 0 {
-			tally(attackOnce(newClient(), viewURL, openURL, hbURL, spoof, browser, useProof))
+			tally(attackOnce(newClient(pickProxy(0)), viewURL, openURL, hbURL, spoof, browser, useProof))
 			remaining--
 		}
 	}
@@ -197,8 +278,9 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for range jobs {
-				tally(attackOnce(newClient(), viewURL, openURL, hbURL, spoof, browser, useProof))
+			for i := range jobs {
+				// 신원(i)마다 다른 프록시로 egress → 서버가 보는 '실제 IP'가 분산된다.
+				tally(attackOnce(newClient(pickProxy(i)), viewURL, openURL, hbURL, spoof, browser, useProof))
 			}
 		}()
 	}
@@ -206,6 +288,9 @@ func main() {
 	elapsed := time.Since(start)
 
 	fmt.Printf("\n===== 결과 (mode=%s, id=%d) =====\n", *mode, *id)
+	if len(proxies) > 0 {
+		fmt.Printf("경로 B    : 프록시 %d개로 egress 분산 (XFF 스푸핑 꺼짐)\n", len(proxies))
+	}
 	fmt.Printf("보낸 요청 : %d\n", *n)
 	fmt.Printf("반영됨    : %d  (%.1f%%)\n", counted, 100*float64(counted)/float64(*n))
 	fmt.Printf("미반영    : %d\n", int64(*n)-counted)

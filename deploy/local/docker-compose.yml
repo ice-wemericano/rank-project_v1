@@ -1,0 +1,26 @@
+# 로컬 실측용 MySQL (일회용). NAS 운영 DB 와 완전히 분리된다.
+#
+#   cd deploy/local
+#   docker compose up -d          # 최초 기동 시 ../../db/schema.sql 자동 실행(시드 포함)
+#   docker compose down -v        # 데이터까지 삭제(초기화)
+#
+# 저장소(dedup/rate/proof)는 앱이 REDIS_ADDR 없이 뜨면 "메모리"를 쓴다.
+# → 운영 Redis(6379, angel-journal)는 절대 건드리지 않는다. 로컬 Redis 도 필요 없다.
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: rank-local-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: rankdb
+      MYSQL_USER: rank
+      MYSQL_PASSWORD: rankpw
+    ports:
+      - "127.0.0.1:3307:3306" # 로컬 3306 과 충돌 피하려 3307 로 노출(루프백 전용)
+    volumes:
+      - ../../db/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+      - rank-local-mysql-data:/var/lib/mysql
+
+volumes:
+  rank-local-mysql-data:

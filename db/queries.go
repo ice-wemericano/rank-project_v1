@@ -2,6 +2,7 @@ package db
 
 import (
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -37,9 +38,14 @@ type PostStats struct {
 	Level     int            `json:"level"`      // 이 게시글에 적용된 방어 레벨
 	ViewCount int            `json:"view_count"` // 실제 반영된 조회수
 	Total     int            `json:"total"`      // 전체 요청 수
-	Reflected int            `json:"reflected"`  // 반영된 수
-	Rejected  int            `json:"rejected"`   // 반영 안 된 수
+	Reflected int            `json:"reflected"`  // 반영된 수(인라인 통과 - 스크럽 전 기준)
+	Rejected  int            `json:"rejected"`   // 반영 안 된 수(인라인에서 걸러짐)
 	Reasons   map[string]int `json:"reasons"`    // 미반영 사유별 수
+
+	// Lv6 사후 스크러빙: 인라인 통과(reflected) 중 나중에 소급 차감된 수.
+	// view_count = reflected - scrubbed (순 확정 조회수).
+	Scrubbed     int            `json:"scrubbed"`      // 소급 차감된 수
+	ScrubReasons map[string]int `json:"scrub_reasons"` // 소급 차감 사유별 수
 
 	// 급증 감지 (최근 TrendMinutes 분, 분 단위)
 	PerMin   int     `json:"per_min"`  // 최근 1분 시도 수
@@ -127,7 +133,8 @@ func Dashboard() ([]PostStats, error) {
 		SELECT p.id, p.title, p.owner, p.view_count,
 		       COUNT(e.id)                                   AS total,
 		       COALESCE(SUM(e.counted = 1), 0)               AS reflected,
-		       COALESCE(SUM(e.counted = 0), 0)               AS rejected
+		       COALESCE(SUM(e.counted = 0), 0)               AS rejected,
+		       COALESCE(SUM(e.counted = 1 AND e.scrubbed = 1), 0) AS scrubbed
 		FROM posts p
 		LEFT JOIN view_events e ON e.post_id = p.id
 		GROUP BY p.id, p.title, p.owner, p.view_count
@@ -141,10 +148,11 @@ func Dashboard() ([]PostStats, error) {
 	index := map[int]int{}
 	for rows.Next() {
 		var s PostStats
-		if err := rows.Scan(&s.ID, &s.Title, &s.Owner, &s.ViewCount, &s.Total, &s.Reflected, &s.Rejected); err != nil {
+		if err := rows.Scan(&s.ID, &s.Title, &s.Owner, &s.ViewCount, &s.Total, &s.Reflected, &s.Rejected, &s.Scrubbed); err != nil {
 			return nil, err
 		}
 		s.Reasons = map[string]int{}
+		s.ScrubReasons = map[string]int{}
 		index[s.ID] = len(stats)
 		stats = append(stats, s)
 	}
@@ -152,7 +160,7 @@ func Dashboard() ([]PostStats, error) {
 		return nil, err
 	}
 
-	// 미반영 사유별 분포
+	// 미반영 사유별 분포(인라인에서 걸러진 것)
 	rrows, err := DB.Query(`
 		SELECT post_id, reason, COUNT(*)
 		FROM view_events
@@ -173,6 +181,30 @@ func Dashboard() ([]PostStats, error) {
 		}
 	}
 	if err := rrows.Err(); err != nil {
+		return nil, err
+	}
+
+	// 소급 차감(스크럽) 사유별 분포
+	srows, err := DB.Query(`
+		SELECT post_id, scrub_reason, COUNT(*)
+		FROM view_events
+		WHERE counted = 1 AND scrubbed = 1
+		GROUP BY post_id, scrub_reason`)
+	if err != nil {
+		return nil, err
+	}
+	defer srows.Close()
+	for srows.Next() {
+		var pid, cnt int
+		var reason string
+		if err := srows.Scan(&pid, &reason, &cnt); err != nil {
+			return nil, err
+		}
+		if i, ok := index[pid]; ok {
+			stats[i].ScrubReasons[reason] = cnt
+		}
+	}
+	if err := srows.Err(); err != nil {
 		return nil, err
 	}
 
@@ -244,6 +276,86 @@ func ResetStats() error {
 	}
 	_, err := DB.Exec(`UPDATE posts SET view_count = 0`)
 	return err
+}
+
+// ScrubCandidate 는 사후 스크러빙 검사 대상 이벤트 1건(인라인 통과 + 아직 미차감).
+type ScrubCandidate struct {
+	ID        int64
+	PostID    int
+	IP        string
+	UserAgent string
+	CreatedAt time.Time
+}
+
+// CountedSince 는 window 구간 안에서 "인라인 통과했지만 아직 스크럽되지 않은" 이벤트를 돌려준다.
+// 스크러버가 집계 관점으로 재검사할 후보다.
+func CountedSince(window time.Duration) ([]ScrubCandidate, error) {
+	if !ready() {
+		return nil, ErrNoDB
+	}
+	cutoff := time.Now().Add(-window)
+	rows, err := DB.Query(`
+		SELECT id, post_id, ip, user_agent, created_at
+		FROM view_events
+		WHERE counted = 1 AND scrubbed = 0 AND created_at > ?
+		ORDER BY post_id`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ScrubCandidate
+	for rows.Next() {
+		var c ScrubCandidate
+		if err := rows.Scan(&c.ID, &c.PostID, &c.IP, &c.UserAgent, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ScrubEvents 는 한 글의 이벤트 묶음을 소급 차감한다(트랜잭션).
+// 아직 scrubbed=0 인 것만 표시하고, 실제로 바뀐 수만큼 posts.view_count 를 줄인다(0 미만 방지).
+// 반환값은 실제로 차감된 건수.
+func ScrubEvents(postID int, ids []int64, reason string) (int, error) {
+	if !ready() {
+		return 0, ErrNoDB
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	ph := make([]string, len(ids))
+	args := make([]interface{}, 0, len(ids)+1)
+	args = append(args, reason)
+	for i, id := range ids {
+		ph[i] = "?"
+		args = append(args, id)
+	}
+
+	tx, err := DB.Begin()
+	if err != nil {
+		return 0, err
+	}
+	res, err := tx.Exec(
+		"UPDATE view_events SET scrubbed = 1, scrub_reason = ? "+
+			"WHERE scrubbed = 0 AND id IN ("+strings.Join(ph, ",")+")", args...)
+	if err != nil {
+		tx.Rollback()
+		return 0, err
+	}
+	affected, _ := res.RowsAffected()
+	if affected > 0 {
+		if _, err := tx.Exec(
+			`UPDATE posts SET view_count = GREATEST(view_count - ?, 0) WHERE id = ?`,
+			affected, postID); err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(affected), nil
 }
 
 func boolToInt(b bool) int {

@@ -4,11 +4,13 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"rank-project_v1/db"
 	"rank-project_v1/defense"
 	"rank-project_v1/logs"
 	"rank-project_v1/router"
+	"rank-project_v1/scrubber"
 
 	"github.com/joho/godotenv"
 )
@@ -47,6 +49,9 @@ func main() {
 	if db.DB != nil {
 		defer db.DB.Close()
 	}
+
+	// Lv6 사후 스크러빙: 집계를 주기적으로 다시 보고 분산 공격분을 소급 차감한다.
+	scrubber.Start(15 * time.Second)
 
 	// 라우터 초기화
 	router.Init()
